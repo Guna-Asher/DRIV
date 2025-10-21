@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: driv-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - driv-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: driv-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - driv-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: driv-backend
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - MONGO_URL=mongodb://admin:admin123@mongodb:27017
+      - DB_NAME=driv_database
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - JWT_SECRET_KEY=driv-secret-key-change-in-production-use-strong-random-key
+      - ENCRYPTION_KEY=your-aes-256-encryption-key-32-bytes-long
+      - CORS_ORIGINS=*
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+    networks:
+      - driv-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: driv-celery-worker
+    restart: always
+    command: celery -A celery_tasks worker --loglevel=info
+    environment:
+      - MONGO_URL=mongodb://admin:admin123@mongodb:27017
+      - DB_NAME=driv_database
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - backend
+      - redis
+    volumes:
+      - ./backend:/app/backend
+    networks:
+      - driv-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: driv-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8001
+      - WDS_SOCKET_PORT=443
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/frontend/src
+      - ./frontend/public:/app/frontend/public
+    networks:
+      - driv-network
+    stdin_open: true
+    tty: true
+
+networks:
+  driv-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    driver: local
